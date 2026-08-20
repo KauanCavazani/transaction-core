@@ -7,9 +7,11 @@ import java.util.UUID;
 
 public record TransactionInitiatedEvent(UUID eventId, UUID transactionId, UUID sourceAccountId, UUID destinationAccountId, Money amount, Instant occurredAt) implements DomainEvent {
 
+    public static final String TOPIC = "transactioncore.transactions.initiated";
+
     @Override
     public String topic() {
-        return "transactioncore.transactions.initiated";
+        return TOPIC;
     }
 
     public static TransactionInitiatedEvent create(UUID transactionId, UUID sourceAccountId, UUID destinationAccountId, Money amount) {

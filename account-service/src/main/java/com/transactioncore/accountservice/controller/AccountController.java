@@ -1,6 +1,7 @@
 package com.transactioncore.accountservice.controller;
 
 import com.transactioncore.accountservice.domain.Account;
+import com.transactioncore.accountservice.dto.AccountOperationRequest;
 import com.transactioncore.accountservice.dto.AccountResponse;
 import com.transactioncore.accountservice.dto.CreateAccountRequest;
 import com.transactioncore.accountservice.service.AccountService;
@@ -10,7 +11,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
-import java.util.Currency;
 import java.util.UUID;
 
 @RestController
@@ -34,6 +34,20 @@ public class AccountController {
     public ResponseEntity<AccountResponse> getAccountById(@PathVariable UUID accountId) {
         Account account = service.findById(accountId);
         return ResponseEntity.ok(AccountResponse.from(account));
+    }
+
+    @PostMapping("/{accountId}/debits")
+    public ResponseEntity<Void> debit(@PathVariable UUID accountId, @Valid @RequestBody AccountOperationRequest request) {
+        Money money = Money.of(request.amount(), request.currency());
+        service.debit(accountId, request.operationId(), money);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{accountId}/credits")
+    public ResponseEntity<Void> credit(@PathVariable UUID accountId, @Valid @RequestBody AccountOperationRequest request) {
+        Money money = Money.of(request.amount(), request.currency());
+        service.credit(accountId, request.operationId(), money);
+        return ResponseEntity.noContent().build();
     }
 
 }

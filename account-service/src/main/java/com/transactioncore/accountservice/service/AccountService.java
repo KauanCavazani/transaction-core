@@ -1,7 +1,9 @@
 package com.transactioncore.accountservice.service;
 
 import com.transactioncore.accountservice.domain.Account;
+import com.transactioncore.accountservice.domain.ProcessedOperation;
 import com.transactioncore.accountservice.repository.AccountRepository;
+import com.transactioncore.accountservice.repository.ProcessedOperationRepository;
 import com.transactioncore.shared.exceptions.AccountNotFoundException;
 import com.transactioncore.shared.valueobject.Money;
 import org.springframework.stereotype.Service;
@@ -13,9 +15,11 @@ import java.util.UUID;
 public class AccountService {
 
     private final AccountRepository repository;
+    private final ProcessedOperationRepository processedOperationRepository;
 
-    public AccountService(AccountRepository repository) {
+    public AccountService(AccountRepository repository, ProcessedOperationRepository processedOperationRepository) {
         this.repository = repository;
+        this.processedOperationRepository = processedOperationRepository;
     }
 
     @Transactional
@@ -30,17 +34,25 @@ public class AccountService {
     }
 
     @Transactional
-    public void debit(UUID accountId, Money amount) {
+    public void debit(UUID accountId, UUID operationId, Money amount) {
+        if (isOperationProcessed(operationId)) return;
         Account account = findById(accountId);
         account.debit(amount);
         repository.save(account);
+        processedOperationRepository.save(new ProcessedOperation(operationId));
     }
 
     @Transactional
-    public void credit(UUID accountId, Money amount) {
+    public void credit(UUID accountId, UUID operationId, Money amount) {
+        if (isOperationProcessed(operationId)) return;
         Account account = findById(accountId);
         account.credit(amount);
         repository.save(account);
+        processedOperationRepository.save(new ProcessedOperation(operationId));
+    }
+
+    private boolean isOperationProcessed(UUID operationId) {
+        return processedOperationRepository.existsById(operationId);
     }
 
 }

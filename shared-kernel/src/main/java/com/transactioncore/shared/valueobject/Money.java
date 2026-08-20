@@ -1,5 +1,7 @@
 package com.transactioncore.shared.valueobject;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import java.math.BigDecimal;
 import java.util.Currency;
 
@@ -38,10 +40,12 @@ public record Money(BigDecimal amount, Currency currency) {
         return this.amount.compareTo(other.amount) >= 0;
     }
 
+    @JsonIgnore
     public boolean isNegative() {
         return this.amount.compareTo(BigDecimal.ZERO) < 0;
     }
 
+    @JsonIgnore
     public boolean isZero() {
         return this.amount.compareTo(BigDecimal.ZERO) == 0;
     }

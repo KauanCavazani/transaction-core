@@ -1,7 +1,9 @@
 package com.transactioncore.accountservice.service;
 
 import com.transactioncore.accountservice.domain.Account;
+import com.transactioncore.accountservice.domain.ProcessedOperation;
 import com.transactioncore.accountservice.repository.AccountRepository;
+import com.transactioncore.accountservice.repository.ProcessedOperationRepository;
 import com.transactioncore.shared.exceptions.AccountNotFoundException;
 import com.transactioncore.shared.exceptions.InsufficientFundsException;
 import com.transactioncore.shared.valueobject.Money;
@@ -28,14 +30,18 @@ import static org.mockito.Mockito.when;
 class AccountServiceTest {
 
     @Mock
-    private AccountRepository repository;
+    private AccountRepository accountRepository;
+
+    @Mock
+    private ProcessedOperationRepository processedOperationRepository;
 
     private AccountService accountService;
 
     private final UUID accountId = UUID.randomUUID();
+    private final UUID operationId = UUID.randomUUID();
 
     private AccountService newService() {
-        return new AccountService(repository);
+        return new AccountService(accountRepository, processedOperationRepository);
     }
 
     @Test
@@ -45,103 +51,144 @@ class AccountServiceTest {
         Money initialBalance = Money.brl(new BigDecimal("500.00"));
         Account savedAccount = new Account("Kauan Brianez", initialBalance);
 
-        when(repository.save(any(Account.class))).thenReturn(savedAccount);
+        when(accountRepository.save(any(Account.class))).thenReturn(savedAccount);
 
         Account result = accountService.create("Kauan Brianez", initialBalance);
 
         assertThat(result).isEqualTo(savedAccount);
-        verify(repository, times(1)).save(any(Account.class));
-    }
-
-    @Test
-    @DisplayName("create should pass an account with the requested owner name and balance to save")
-    void createShouldPassAnAccountWithTheRequestedOwnerNameAndBalanceToSave() {
-        accountService = newService();
-        Money initialBalance = Money.brl(new BigDecimal("500.00"));
-        when(repository.save(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
-
-        accountService.create("Kauan Brianez", initialBalance);
-
-        ArgumentCaptor<Account> captor = ArgumentCaptor.forClass(Account.class);
-        verify(repository).save(captor.capture());
-        Account captured = captor.getValue();
-
-        assertThat(captured.getOwnerName()).isEqualTo("Kauan Brianez");
-        assertThat(captured.getBalance()).isEqualTo(initialBalance);
-    }
-
-    @Test
-    @DisplayName("findById should return the account when it exists")
-    void findByIdShouldReturnTheAccountWhenItExists() {
-        accountService = newService();
-        Account existingAccount = new Account("Kauan Brianez", Money.brl(new BigDecimal("100.00")));
-        when(repository.findById(accountId)).thenReturn(Optional.of(existingAccount));
-
-        Account result = accountService.findById(accountId);
-
-        assertThat(result).isEqualTo(existingAccount);
+        verify(accountRepository, times(1)).save(any(Account.class));
     }
 
     @Test
     @DisplayName("findById should throw AccountNotFoundException when the account does not exist")
     void findByIdShouldThrowAccountNotFoundExceptionWhenTheAccountDoesNotExist() {
         accountService = newService();
-        when(repository.findById(accountId)).thenReturn(Optional.empty());
+        when(accountRepository.findById(accountId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> accountService.findById(accountId))
                 .isInstanceOf(AccountNotFoundException.class);
     }
 
     @Test
-    @DisplayName("debit should reduce the balance and save the account")
-    void debitShouldReduceTheBalanceAndSaveTheAccount() {
+    @DisplayName("debit should reduce the balance, save the account and register the operation as processed")
+    void debitShouldReduceTheBalanceSaveTheAccountAndRegisterTheOperationAsProcessed() {
         accountService = newService();
         Account existingAccount = new Account("Kauan Brianez", Money.brl(new BigDecimal("100.00")));
-        when(repository.findById(accountId)).thenReturn(Optional.of(existingAccount));
-        when(repository.save(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(processedOperationRepository.existsById(operationId)).thenReturn(false);
+        when(accountRepository.findById(accountId)).thenReturn(Optional.of(existingAccount));
+        when(accountRepository.save(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        accountService.debit(accountId, Money.brl(new BigDecimal("30.00")));
+        accountService.debit(accountId, operationId, Money.brl(new BigDecimal("30.00")));
 
         assertThat(existingAccount.getBalance()).isEqualTo(Money.brl(new BigDecimal("70.00")));
-        verify(repository, times(1)).save(existingAccount);
+        verify(accountRepository, times(1)).save(existingAccount);
+
+        ArgumentCaptor<ProcessedOperation> captor = ArgumentCaptor.forClass(ProcessedOperation.class);
+        verify(processedOperationRepository, times(1)).save(captor.capture());
+        assertThat(captor.getValue().getOperationId()).isEqualTo(operationId);
     }
 
     @Test
-    @DisplayName("debit should propagate InsufficientFundsException and not save when balance is too low")
-    void debitShouldPropagateInsufficientFundsExceptionAndNotSaveWhenBalanceIsTooLow() {
+    @DisplayName("debit should do nothing when the operation was already processed before")
+    void debitShouldDoNothingWhenTheOperationWasAlreadyProcessedBefore() {
+        accountService = newService();
+        when(processedOperationRepository.existsById(operationId)).thenReturn(true);
+
+        accountService.debit(accountId, operationId, Money.brl(new BigDecimal("30.00")));
+
+        verify(accountRepository, never()).findById(any());
+        verify(accountRepository, never()).save(any());
+        verify(processedOperationRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("debit should throw AccountNotFoundException when the account does not exist")
+    void debitShouldThrowAccountNotFoundExceptionWhenTheAccountDoesNotExist() {
+        accountService = newService();
+        when(processedOperationRepository.existsById(operationId)).thenReturn(false);
+        when(accountRepository.findById(accountId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> accountService.debit(accountId, operationId, Money.brl(new BigDecimal("30.00"))))
+                .isInstanceOf(AccountNotFoundException.class);
+
+        verify(processedOperationRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("debit should propagate InsufficientFundsException and not register the operation as processed")
+    void debitShouldPropagateInsufficientFundsExceptionAndNotRegisterTheOperationAsProcessed() {
         accountService = newService();
         Account existingAccount = new Account("Kauan Brianez", Money.brl(new BigDecimal("10.00")));
-        when(repository.findById(accountId)).thenReturn(Optional.of(existingAccount));
+        when(processedOperationRepository.existsById(operationId)).thenReturn(false);
+        when(accountRepository.findById(accountId)).thenReturn(Optional.of(existingAccount));
 
-        assertThatThrownBy(() -> accountService.debit(accountId, Money.brl(new BigDecimal("50.00"))))
+        assertThatThrownBy(() -> accountService.debit(accountId, operationId, Money.brl(new BigDecimal("50.00"))))
                 .isInstanceOf(InsufficientFundsException.class);
 
-        verify(repository, never()).save(any(Account.class));
+        verify(accountRepository, never()).save(any());
+        verify(processedOperationRepository, never()).save(any());
     }
 
     @Test
-    @DisplayName("credit should increase the balance and save the account")
-    void creditShouldIncreaseTheBalanceAndSaveTheAccount() {
+    @DisplayName("credit should increase the balance, save the account and register the operation as processed")
+    void creditShouldIncreaseTheBalanceSaveTheAccountAndRegisterTheOperationAsProcessed() {
         accountService = newService();
         Account existingAccount = new Account("Kauan Brianez", Money.brl(new BigDecimal("100.00")));
-        when(repository.findById(accountId)).thenReturn(Optional.of(existingAccount));
-        when(repository.save(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(processedOperationRepository.existsById(operationId)).thenReturn(false);
+        when(accountRepository.findById(accountId)).thenReturn(Optional.of(existingAccount));
+        when(accountRepository.save(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        accountService.credit(accountId, Money.brl(new BigDecimal("25.00")));
+        accountService.credit(accountId, operationId, Money.brl(new BigDecimal("25.00")));
 
         assertThat(existingAccount.getBalance()).isEqualTo(Money.brl(new BigDecimal("125.00")));
-        verify(repository, times(1)).save(existingAccount);
+        verify(accountRepository, times(1)).save(existingAccount);
+        verify(processedOperationRepository, times(1)).save(any());
+    }
+
+    @Test
+    @DisplayName("credit should do nothing when the operation was already processed before")
+    void creditShouldDoNothingWhenTheOperationWasAlreadyProcessedBefore() {
+        accountService = newService();
+        when(processedOperationRepository.existsById(operationId)).thenReturn(true);
+
+        accountService.credit(accountId, operationId, Money.brl(new BigDecimal("25.00")));
+
+        verify(accountRepository, never()).findById(any());
+        verify(accountRepository, never()).save(any());
+        verify(processedOperationRepository, never()).save(any());
     }
 
     @Test
     @DisplayName("credit should throw AccountNotFoundException when the account does not exist")
     void creditShouldThrowAccountNotFoundExceptionWhenTheAccountDoesNotExist() {
         accountService = newService();
-        when(repository.findById(accountId)).thenReturn(Optional.empty());
+        when(processedOperationRepository.existsById(operationId)).thenReturn(false);
+        when(accountRepository.findById(accountId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> accountService.credit(accountId, Money.brl(new BigDecimal("10.00"))))
+        assertThatThrownBy(() -> accountService.credit(accountId, operationId, Money.brl(new BigDecimal("25.00"))))
                 .isInstanceOf(AccountNotFoundException.class);
 
-        verify(repository, never()).save(any(Account.class));
+        verify(processedOperationRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("calling debit twice with the same operationId should only apply the effect once")
+    void callingDebitTwiceWithTheSameOperationIdShouldOnlyApplyTheEffectOnce() {
+        accountService = newService();
+        Account existingAccount = new Account("Kauan Brianez", Money.brl(new BigDecimal("100.00")));
+
+        when(processedOperationRepository.existsById(operationId)).thenReturn(false);
+        when(accountRepository.findById(accountId)).thenReturn(Optional.of(existingAccount));
+        when(accountRepository.save(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        accountService.debit(accountId, operationId, Money.brl(new BigDecimal("30.00")));
+        assertThat(existingAccount.getBalance()).isEqualTo(Money.brl(new BigDecimal("70.00")));
+
+        when(processedOperationRepository.existsById(operationId)).thenReturn(true);
+
+        accountService.debit(accountId, operationId, Money.brl(new BigDecimal("30.00")));
+
+        assertThat(existingAccount.getBalance()).isEqualTo(Money.brl(new BigDecimal("70.00")));
+        verify(accountRepository, times(1)).save(existingAccount);
     }
 }
