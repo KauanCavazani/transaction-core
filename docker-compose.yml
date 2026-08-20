@@ -3,13 +3,14 @@ services:
     image: postgres:16
     container_name: transaction-core-postgres
     environment:
-      POSTGRES_DB: transaction-core
+      POSTGRES_DB: account-service
       POSTGRES_USER: transaction-core
       POSTGRES_PASSWORD: transaction-core-123
     ports:
       - "5432:5432"
     volumes:
       - transaction-core_postgres_data:/var/lib/postgresql/data
+      - ./docker/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U transaction-core"]
       interval: 5s

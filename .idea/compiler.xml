@@ -8,12 +8,14 @@
         <outputRelativeToContentRoot value="true" />
         <module name="account-service" />
         <module name="shared-kernel" />
+        <module name="payment-service" />
       </profile>
     </annotationProcessing>
   </component>
   <component name="JavacSettings">
     <option name="ADDITIONAL_OPTIONS_OVERRIDE">
       <module name="account-service" options="-parameters" />
+      <module name="payment-service" options="-parameters" />
     </option>
   </component>
 </project>

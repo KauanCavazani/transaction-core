@@ -25,7 +25,7 @@ public class AccountController {
 
     @PostMapping
     public ResponseEntity<AccountResponse> create(@Valid @RequestBody CreateAccountRequest request) {
-        Money money = new Money(request.balanceAmount(), Currency.getInstance(request.currency()));
+        Money money = Money.of(request.balanceAmount(), request.currency());
         Account newAccount = service.create(request.ownerName(), money);
         return ResponseEntity.created(URI.create("/accounts/" + newAccount.getId())).body(AccountResponse.from(newAccount));
     }

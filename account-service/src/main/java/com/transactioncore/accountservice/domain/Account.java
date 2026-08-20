@@ -49,7 +49,7 @@ public class Account {
     }
 
     public Money getBalance() {
-        return new Money(balanceAmount, Currency.getInstance(currencyCode));
+        return Money.of(balanceAmount, currencyCode);
     }
 
     public void debit(Money amount) {
