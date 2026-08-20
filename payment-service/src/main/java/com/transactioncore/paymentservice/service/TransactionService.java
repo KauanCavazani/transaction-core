@@ -1,18 +1,12 @@
 package com.transactioncore.paymentservice.service;
 
-import com.transactioncore.paymentservice.client.AccountClient;
-import com.transactioncore.paymentservice.client.dto.AccountAvailability;
+import com.transactioncore.paymentservice.cache.IdempotencyCache;
 import com.transactioncore.paymentservice.domain.Transaction;
-import com.transactioncore.paymentservice.messaging.OutboxEventPublisher;
 import com.transactioncore.paymentservice.repository.TransactionRepository;
-import com.transactioncore.shared.events.TransactionInitiatedEvent;
-import com.transactioncore.shared.exceptions.AccountNotFoundException;
-import com.transactioncore.shared.exceptions.AccountNotOperationalException;
-import com.transactioncore.shared.exceptions.DuplicateTransactionException;
+import com.transactioncore.shared.exceptions.TransactionProcessingException;
 import com.transactioncore.shared.valueobject.IdempotencyKey;
 import com.transactioncore.shared.valueobject.Money;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -21,47 +15,38 @@ import java.util.UUID;
 public class TransactionService {
 
     private final TransactionRepository repository;
-    private final AccountClient accountClient;
-    private final OutboxEventPublisher outboxEventPublisher;
+    private final TransactionProcessor transactionProcessor;
+    private final IdempotencyCache idempotencyCache;
 
-    public TransactionService(TransactionRepository repository, AccountClient accountClient, OutboxEventPublisher outboxEventPublisher) {
+    public TransactionService(TransactionRepository repository, TransactionProcessor transactionProcessor, IdempotencyCache idempotencyCache) {
         this.repository = repository;
-        this.accountClient = accountClient;
-        this.outboxEventPublisher = outboxEventPublisher;
+        this.transactionProcessor = transactionProcessor;
+        this.idempotencyCache = idempotencyCache;
     }
 
-    @Transactional
     public Transaction transfer(IdempotencyKey idempotencyKey, UUID sourceAccountId, UUID destinationAccountId, Money amount) {
-        Optional<Transaction> existingTransaction = repository.findByIdempotencyKey(idempotencyKey.value());
-        if (existingTransaction.isPresent()) {
-            Transaction transaction = existingTransaction.get();
-
-            if (transaction.matches(sourceAccountId, destinationAccountId, amount)) {
-                return transaction;
-            }
-
-            throw new DuplicateTransactionException(idempotencyKey);
+        Optional<Transaction> cached = tryGetFromCache(idempotencyKey.value());
+        if (cached.isPresent()) {
+            return cached.get();
         }
 
-        validateAccountIsOperational(sourceAccountId);
-        validateAccountIsOperational(destinationAccountId);
+        boolean lockAcquired = idempotencyCache.tryLock(idempotencyKey.value());
+        if (!lockAcquired) {
+            throw new TransactionProcessingException(idempotencyKey);
+        }
 
-        Transaction newTransaction = new Transaction(idempotencyKey.value(), sourceAccountId, destinationAccountId, amount);
-        newTransaction = repository.save(newTransaction);
-
-        TransactionInitiatedEvent event = TransactionInitiatedEvent.create(newTransaction.getId(), sourceAccountId, destinationAccountId, amount);
-        outboxEventPublisher.publish(event);
-
-        return newTransaction;
+        try {
+            Transaction transaction = transactionProcessor.processTransfer(idempotencyKey, sourceAccountId, destinationAccountId, amount);
+            idempotencyCache.store(idempotencyKey.value(), transaction.getId());
+            return transaction;
+        } finally {
+            idempotencyCache.releaseLock(idempotencyKey.value());
+        }
     }
 
-    private void validateAccountIsOperational(UUID accountId) {
-        AccountAvailability availability = accountClient.checkAvailability(accountId.toString());
-        switch (availability) {
-            case NOT_FOUND -> throw new AccountNotFoundException(accountId);
-            case INACTIVE -> throw new AccountNotOperationalException(accountId);
-            case ACTIVE -> { /* Account is operational, do nothing */ }
-        }
+    private Optional<Transaction> tryGetFromCache(String idempotencyKey) {
+        Optional<UUID> cachedTransactionId = idempotencyCache.findTransactionId(idempotencyKey);
+        return cachedTransactionId.flatMap(repository::findById);
     }
 
 }

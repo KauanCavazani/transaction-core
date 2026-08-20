@@ -1,21 +1,14 @@
 package com.transactioncore.paymentservice.service;
 
-import com.transactioncore.paymentservice.client.AccountClient;
-import com.transactioncore.paymentservice.client.dto.AccountAvailability;
+import com.transactioncore.paymentservice.cache.IdempotencyCache;
 import com.transactioncore.paymentservice.domain.Transaction;
-import com.transactioncore.paymentservice.messaging.OutboxEventPublisher;
 import com.transactioncore.paymentservice.repository.TransactionRepository;
-import com.transactioncore.shared.events.DomainEvent;
-import com.transactioncore.shared.events.TransactionInitiatedEvent;
-import com.transactioncore.shared.exceptions.AccountNotFoundException;
-import com.transactioncore.shared.exceptions.AccountNotOperationalException;
-import com.transactioncore.shared.exceptions.DuplicateTransactionException;
+import com.transactioncore.shared.exceptions.TransactionProcessingException;
 import com.transactioncore.shared.valueobject.IdempotencyKey;
 import com.transactioncore.shared.valueobject.Money;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -26,6 +19,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -38,10 +32,10 @@ class TransactionServiceTest {
     private TransactionRepository transactionRepository;
 
     @Mock
-    private AccountClient accountClient;
+    private TransactionProcessor transactionProcessor;
 
     @Mock
-    private OutboxEventPublisher outboxEventPublisher;
+    private IdempotencyCache idempotencyCache;
 
     private TransactionService transactionService;
 
@@ -51,137 +45,96 @@ class TransactionServiceTest {
     private final IdempotencyKey idempotencyKey = IdempotencyKey.of("key-1");
 
     private TransactionService newService() {
-        return new TransactionService(transactionRepository, accountClient, outboxEventPublisher);
+        return new TransactionService(transactionRepository, transactionProcessor, idempotencyCache);
     }
 
     @Test
-    @DisplayName("transfer should create, save and publish the event when both accounts are active")
-    void transferShouldCreateSaveAndPublishTheEventWhenBothAccountsAreActive() {
+    @DisplayName("transfer should return the cached transaction without acquiring a lock or calling the processor")
+    void transferShouldReturnTheCachedTransactionWithoutAcquiringALockOrCallingTheProcessor() {
         transactionService = newService();
-        when(transactionRepository.findByIdempotencyKey(idempotencyKey.value())).thenReturn(Optional.empty());
-        when(accountClient.checkAvailability(sourceAccountId.toString())).thenReturn(AccountAvailability.ACTIVE);
-        when(accountClient.checkAvailability(destinationAccountId.toString())).thenReturn(AccountAvailability.ACTIVE);
-        when(transactionRepository.save(any(Transaction.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        UUID cachedTransactionId = UUID.randomUUID();
+        Transaction cachedTransaction = new Transaction(idempotencyKey.value(), sourceAccountId, destinationAccountId, amount);
+
+        when(idempotencyCache.findTransactionId(idempotencyKey.value())).thenReturn(Optional.of(cachedTransactionId));
+        when(transactionRepository.findById(cachedTransactionId)).thenReturn(Optional.of(cachedTransaction));
 
         Transaction result = transactionService.transfer(idempotencyKey, sourceAccountId, destinationAccountId, amount);
 
-        assertThat(result).isNotNull();
-        assertThat(result.getSourceAccountId()).isEqualTo(sourceAccountId);
-        assertThat(result.getDestinationAccountId()).isEqualTo(destinationAccountId);
-        assertThat(result.getAmount()).isEqualTo(amount);
-        verify(transactionRepository, times(1)).save(any(Transaction.class));
+        assertThat(result).isEqualTo(cachedTransaction);
+        verify(idempotencyCache, never()).tryLock(any());
+        verify(transactionProcessor, never()).processTransfer(any(), any(), any(), any());
     }
 
     @Test
-    @DisplayName("transfer should publish a TransactionInitiatedEvent matching the created transaction")
-    void transferShouldPublishATransactionInitiatedEventMatchingTheCreatedTransaction() {
+    @DisplayName("transfer should fall through to the full flow when the cached id exists but the transaction is not found in the database")
+    void transferShouldFallThroughWhenTheCachedIdExistsButTheTransactionIsNotFoundInTheDatabase() {
         transactionService = newService();
-        when(transactionRepository.findByIdempotencyKey(idempotencyKey.value())).thenReturn(Optional.empty());
-        when(accountClient.checkAvailability(sourceAccountId.toString())).thenReturn(AccountAvailability.ACTIVE);
-        when(accountClient.checkAvailability(destinationAccountId.toString())).thenReturn(AccountAvailability.ACTIVE);
-        when(transactionRepository.save(any(Transaction.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        UUID cachedTransactionId = UUID.randomUUID();
+        Transaction createdTransaction = new Transaction(idempotencyKey.value(), sourceAccountId, destinationAccountId, amount);
+
+        when(idempotencyCache.findTransactionId(idempotencyKey.value())).thenReturn(Optional.of(cachedTransactionId));
+        when(transactionRepository.findById(cachedTransactionId)).thenReturn(Optional.empty());
+        when(idempotencyCache.tryLock(idempotencyKey.value())).thenReturn(true);
+        when(transactionProcessor.processTransfer(idempotencyKey, sourceAccountId, destinationAccountId, amount))
+                .thenReturn(createdTransaction);
 
         Transaction result = transactionService.transfer(idempotencyKey, sourceAccountId, destinationAccountId, amount);
 
-        ArgumentCaptor<DomainEvent> eventCaptor = ArgumentCaptor.forClass(DomainEvent.class);
-        verify(outboxEventPublisher, times(1)).publish(eventCaptor.capture());
-
-        DomainEvent publishedEvent = eventCaptor.getValue();
-        assertThat(publishedEvent).isInstanceOf(TransactionInitiatedEvent.class);
-        assertThat(publishedEvent.transactionId()).isEqualTo(result.getId());
-
-        TransactionInitiatedEvent initiatedEvent = (TransactionInitiatedEvent) publishedEvent;
-        assertThat(initiatedEvent.sourceAccountId()).isEqualTo(sourceAccountId);
-        assertThat(initiatedEvent.destinationAccountId()).isEqualTo(destinationAccountId);
-        assertThat(initiatedEvent.amount()).isEqualTo(amount);
+        assertThat(result).isEqualTo(createdTransaction);
+        verify(transactionProcessor, times(1)).processTransfer(idempotencyKey, sourceAccountId, destinationAccountId, amount);
     }
 
-    // ---------------------------------------------------------------
-    // Idempotência: já existe uma transação com essa chave
-    // ---------------------------------------------------------------
-
     @Test
-    @DisplayName("transfer should return the existing transaction when the data matches (idempotent retry)")
-    void transferShouldReturnTheExistingTransactionWhenTheDataMatches() {
+    @DisplayName("transfer should acquire the lock, call the processor and store the result in cache")
+    void transferShouldAcquireTheLockCallTheProcessorAndStoreTheResultInCache() {
         transactionService = newService();
-        Transaction existingTransaction = new Transaction(idempotencyKey.value(), sourceAccountId, destinationAccountId, amount);
-        when(transactionRepository.findByIdempotencyKey(idempotencyKey.value())).thenReturn(Optional.of(existingTransaction));
+        Transaction createdTransaction = new Transaction(idempotencyKey.value(), sourceAccountId, destinationAccountId, amount);
+
+        when(idempotencyCache.findTransactionId(idempotencyKey.value())).thenReturn(Optional.empty());
+        when(idempotencyCache.tryLock(idempotencyKey.value())).thenReturn(true);
+        when(transactionProcessor.processTransfer(idempotencyKey, sourceAccountId, destinationAccountId, amount))
+                .thenReturn(createdTransaction);
 
         Transaction result = transactionService.transfer(idempotencyKey, sourceAccountId, destinationAccountId, amount);
 
-        assertThat(result).isEqualTo(existingTransaction);
-        verify(transactionRepository, never()).save(any(Transaction.class));
-        verify(accountClient, never()).checkAvailability(any());
-        verify(outboxEventPublisher, never()).publish(any());
+        assertThat(result).isEqualTo(createdTransaction);
+        verify(idempotencyCache, times(1)).store(idempotencyKey.value(), createdTransaction.getId());
+        verify(idempotencyCache, times(1)).releaseLock(idempotencyKey.value());
     }
 
     @Test
-    @DisplayName("transfer should throw DuplicateTransactionException when the same key is reused with different data")
-    void transferShouldThrowDuplicateTransactionExceptionWhenTheSameKeyIsReusedWithDifferentData() {
+    @DisplayName("transfer should throw TransactionProcessingException when the lock cannot be acquired")
+    void transferShouldThrowTransactionProcessingExceptionWhenTheLockCannotBeAcquired() {
         transactionService = newService();
-        Transaction existingTransaction = new Transaction(idempotencyKey.value(), sourceAccountId, destinationAccountId, amount);
-        when(transactionRepository.findByIdempotencyKey(idempotencyKey.value())).thenReturn(Optional.of(existingTransaction));
-        Money differentAmount = Money.brl(new BigDecimal("999.00"));
 
-        assertThatThrownBy(() -> transactionService.transfer(idempotencyKey, sourceAccountId, destinationAccountId, differentAmount))
-                .isInstanceOf(DuplicateTransactionException.class);
-
-        verify(transactionRepository, never()).save(any(Transaction.class));
-        verify(outboxEventPublisher, never()).publish(any());
-    }
-
-    @Test
-    @DisplayName("transfer should throw AccountNotFoundException when the source account does not exist")
-    void transferShouldThrowAccountNotFoundExceptionWhenTheSourceAccountDoesNotExist() {
-        transactionService = newService();
-        when(transactionRepository.findByIdempotencyKey(idempotencyKey.value())).thenReturn(Optional.empty());
-        when(accountClient.checkAvailability(sourceAccountId.toString())).thenReturn(AccountAvailability.NOT_FOUND);
+        when(idempotencyCache.findTransactionId(idempotencyKey.value())).thenReturn(Optional.empty());
+        when(idempotencyCache.tryLock(idempotencyKey.value())).thenReturn(false);
 
         assertThatThrownBy(() -> transactionService.transfer(idempotencyKey, sourceAccountId, destinationAccountId, amount))
-                .isInstanceOf(AccountNotFoundException.class);
+                .isInstanceOf(TransactionProcessingException.class);
 
-        verify(transactionRepository, never()).save(any(Transaction.class));
-        verify(outboxEventPublisher, never()).publish(any());
+        verify(transactionProcessor, never()).processTransfer(any(), any(), any(), any());
+        // Como o lock nunca foi adquirido, ele também não deveria ser liberado.
+        verify(idempotencyCache, never()).releaseLock(any());
     }
 
     @Test
-    @DisplayName("transfer should throw AccountNotOperationalException when the source account is inactive")
-    void transferShouldThrowAccountNotOperationalExceptionWhenTheSourceAccountIsInactive() {
+    @DisplayName("transfer should release the lock even when the processor throws an exception")
+    void transferShouldReleaseTheLockEvenWhenTheProcessorThrowsAnException() {
         transactionService = newService();
-        when(transactionRepository.findByIdempotencyKey(idempotencyKey.value())).thenReturn(Optional.empty());
-        when(accountClient.checkAvailability(sourceAccountId.toString())).thenReturn(AccountAvailability.INACTIVE);
+
+        when(idempotencyCache.findTransactionId(idempotencyKey.value())).thenReturn(Optional.empty());
+        when(idempotencyCache.tryLock(idempotencyKey.value())).thenReturn(true);
+        doThrow(new RuntimeException("simulated failure"))
+                .when(transactionProcessor).processTransfer(idempotencyKey, sourceAccountId, destinationAccountId, amount);
 
         assertThatThrownBy(() -> transactionService.transfer(idempotencyKey, sourceAccountId, destinationAccountId, amount))
-                .isInstanceOf(AccountNotOperationalException.class);
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("simulated failure");
 
-        verify(transactionRepository, never()).save(any(Transaction.class));
-    }
-
-    @Test
-    @DisplayName("transfer should throw AccountNotFoundException when the destination account does not exist")
-    void transferShouldThrowAccountNotFoundExceptionWhenTheDestinationAccountDoesNotExist() {
-        transactionService = newService();
-        when(transactionRepository.findByIdempotencyKey(idempotencyKey.value())).thenReturn(Optional.empty());
-        when(accountClient.checkAvailability(sourceAccountId.toString())).thenReturn(AccountAvailability.ACTIVE);
-        when(accountClient.checkAvailability(destinationAccountId.toString())).thenReturn(AccountAvailability.NOT_FOUND);
-
-        assertThatThrownBy(() -> transactionService.transfer(idempotencyKey, sourceAccountId, destinationAccountId, amount))
-                .isInstanceOf(AccountNotFoundException.class);
-
-        verify(transactionRepository, never()).save(any(Transaction.class));
-        verify(outboxEventPublisher, never()).publish(any());
-    }
-
-    @Test
-    @DisplayName("transfer should not check the destination account when the source account is already invalid")
-    void transferShouldNotCheckTheDestinationAccountWhenTheSourceAccountIsAlreadyInvalid() {
-        transactionService = newService();
-        when(transactionRepository.findByIdempotencyKey(idempotencyKey.value())).thenReturn(Optional.empty());
-        when(accountClient.checkAvailability(sourceAccountId.toString())).thenReturn(AccountAvailability.NOT_FOUND);
-
-        assertThatThrownBy(() -> transactionService.transfer(idempotencyKey, sourceAccountId, destinationAccountId, amount))
-                .isInstanceOf(AccountNotFoundException.class);
-
-        verify(accountClient, never()).checkAvailability(destinationAccountId.toString());
+        // O finally garante a liberação do lock mesmo com a exceção.
+        verify(idempotencyCache, times(1)).releaseLock(idempotencyKey.value());
+        // E, como falhou, o resultado nunca deveria ser gravado no cache.
+        verify(idempotencyCache, never()).store(any(), any());
     }
 }
