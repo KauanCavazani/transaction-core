@@ -5,9 +5,11 @@ import java.util.UUID;
 
 public record TransactionFailedEvent(UUID eventId, UUID transactionId, String reasonCode, String reasonMessage, Instant occurredAt) implements DomainEvent {
 
+    public static final String TOPIC = "transactioncore.transactions.failed";
+
     @Override
     public String topic() {
-        return "transactioncore.transactions.failed";
+        return TOPIC;
     }
 
     public static TransactionFailedEvent create(UUID transactionId, String reasonCode, String reasonMessage) {

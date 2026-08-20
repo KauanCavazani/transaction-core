@@ -9,6 +9,7 @@
         <module name="shared-kernel" />
         <module name="payment-service" />
         <module name="account-service" />
+        <module name="notification-service" />
         <module name="ledger-service" />
       </profile>
     </annotationProcessing>
@@ -17,6 +18,7 @@
     <option name="ADDITIONAL_OPTIONS_OVERRIDE">
       <module name="account-service" options="-parameters" />
       <module name="ledger-service" options="-parameters" />
+      <module name="notification-service" options="-parameters" />
       <module name="payment-service" options="-parameters" />
     </option>
   </component>

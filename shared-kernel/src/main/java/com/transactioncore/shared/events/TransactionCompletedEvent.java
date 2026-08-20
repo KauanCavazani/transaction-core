@@ -5,9 +5,11 @@ import java.util.UUID;
 
 public record TransactionCompletedEvent(UUID eventId, UUID transactionId, Instant occurredAt) implements DomainEvent {
 
+    public static final String TOPIC = "transactioncore.transactions.completed";
+
     @Override
     public String topic() {
-        return "transactioncore.transactions.completed";
+        return TOPIC;
     }
 
     public static TransactionCompletedEvent create(UUID transactionId) {
