@@ -6,6 +6,8 @@ import com.transactioncore.accountservice.repository.AccountRepository;
 import com.transactioncore.accountservice.repository.ProcessedOperationRepository;
 import com.transactioncore.shared.exceptions.AccountNotFoundException;
 import com.transactioncore.shared.valueobject.Money;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.resilience.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -33,6 +35,11 @@ public class AccountService {
                 .orElseThrow(() -> new AccountNotFoundException(accountId));
     }
 
+    @Retryable(
+            includes = ObjectOptimisticLockingFailureException.class,
+            maxRetries = 2,
+            delay = 100
+    )
     @Transactional
     public void debit(UUID accountId, UUID operationId, Money amount) {
         if (isOperationProcessed(operationId)) return;
@@ -42,6 +49,11 @@ public class AccountService {
         processedOperationRepository.save(new ProcessedOperation(operationId));
     }
 
+    @Retryable(
+            includes = ObjectOptimisticLockingFailureException.class,
+            maxRetries = 2,
+            delay = 100
+    )
     @Transactional
     public void credit(UUID accountId, UUID operationId, Money amount) {
         if (isOperationProcessed(operationId)) return;
