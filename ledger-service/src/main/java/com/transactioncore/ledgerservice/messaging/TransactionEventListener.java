@@ -14,7 +14,7 @@ public class TransactionEventListener {
         this.ledgerService = ledgerService;
     }
 
-    @KafkaListener(topics = TransactionInitiatedEvent.TOPIC, groupId = "ledger-service")
+    @KafkaListener(topics = TransactionInitiatedEvent.TOPIC, groupId = "ledger-service", concurrency = "3")
     public void handle(TransactionInitiatedEvent event) {
         ledgerService.processTransaction(
                 event.eventId(),

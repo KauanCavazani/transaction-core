@@ -27,14 +27,8 @@ public class OutboxEvent {
     @Column(nullable = false, columnDefinition = "TEXT")
     private String payload;
 
-    @Column(nullable = false)
-    private boolean published;
-
     @Column(nullable = false, updatable = false)
     private Instant createdAt;
-
-    @Column(nullable = true)
-    private Instant publishedAt;
 
     protected OutboxEvent() {}
 
@@ -44,13 +38,7 @@ public class OutboxEvent {
         this.eventType = eventType;
         this.topic = topic;
         this.payload = payload;
-        this.published = false;
         this.createdAt = Instant.now();
-    }
-
-    public void markAsPublished() {
-        this.published = true;
-        this.publishedAt = Instant.now();
     }
 
     public UUID getId() {
@@ -73,15 +61,8 @@ public class OutboxEvent {
         return payload;
     }
 
-    public boolean isPublished() {
-        return published;
-    }
-
     public Instant getCreatedAt() {
         return createdAt;
     }
 
-    public Instant getPublishedAt() {
-        return publishedAt;
-    }
 }

@@ -16,7 +16,7 @@ public class NotificationEventListener {
         this.notificationService = notificationService;
     }
 
-    @KafkaListener(topics = TransactionCompletedEvent.TOPIC, groupId = "notification-service", containerFactory = "transactionCompletedListenerFactory")
+    @KafkaListener(topics = TransactionCompletedEvent.TOPIC, groupId = "notification-service", containerFactory = "transactionCompletedListenerFactory", concurrency = "3")
     public void handleCompleted(TransactionCompletedEvent event) {
         notificationService.notify(
                 event.eventId(),
@@ -26,7 +26,7 @@ public class NotificationEventListener {
         );
     }
 
-    @KafkaListener(topics = TransactionFailedEvent.TOPIC, groupId = "notification-service", containerFactory = "transactionFailedListenerFactory")
+    @KafkaListener(topics = TransactionFailedEvent.TOPIC, groupId = "notification-service", containerFactory = "transactionFailedListenerFactory", concurrency = "3")
     public void handleFailed(TransactionFailedEvent event) {
         notificationService.notify(
                 event.eventId(),

@@ -31,11 +31,9 @@ CREATE TABLE outbox_event (
     event_type    VARCHAR(255) NOT NULL,
     topic         VARCHAR(255) NOT NULL,
     payload       TEXT         NOT NULL,
-    published     BOOLEAN      NOT NULL DEFAULT FALSE,
     created_at    TIMESTAMPTZ  NOT NULL,
-    published_at  TIMESTAMPTZ,
 
     CONSTRAINT pk_outbox_event PRIMARY KEY (id)
 );
 
-CREATE INDEX idx_outbox_event_unpublished ON outbox_event (created_at) WHERE published = false;
+CREATE INDEX idx_outbox_event_created_at ON outbox_event (created_at);
